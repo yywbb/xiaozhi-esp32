@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "application.h"
 #include "board.h"
 #include "display.h"
 #include "esp32_camera.h"
@@ -172,6 +173,57 @@ bool Esp32Camera::SetVFlip(bool enabled) {
 bool Esp32Camera::SetSwapBytes(bool enabled) {
     swap_bytes_enabled_ = enabled;
     return true;
+}
+
+bool Esp32Camera::CaptureToJpeg(std::string& jpeg_data, int quality) {
+    if (encoder_thread_.joinable()) {
+        encoder_thread_.join();
+    }
+
+    TaskPriorityReset priority_reset(1);
+    if (!Capture()) {
+        return false;
+    }
+
+    camera_fb_t* fb = current_fb_;
+    if (fb == nullptr) {
+        return false;
+    }
+
+    v4l2_pix_fmt_t enc_fmt;
+    switch (fb->format) {
+        case PIXFORMAT_RGB565: enc_fmt = V4L2_PIX_FMT_RGB565; break;
+        case PIXFORMAT_YUV422: enc_fmt = V4L2_PIX_FMT_YUYV; break;
+        case PIXFORMAT_YUV420: enc_fmt = V4L2_PIX_FMT_YUV420; break;
+        case PIXFORMAT_GRAYSCALE: enc_fmt = V4L2_PIX_FMT_GREY; break;
+        case PIXFORMAT_JPEG: enc_fmt = V4L2_PIX_FMT_JPEG; break;
+        case PIXFORMAT_RGB888: enc_fmt = V4L2_PIX_FMT_RGB24; break;
+        default:
+            ESP_LOGE(TAG, "Unsupported pixel format: %d", fb->format);
+            return false;
+    }
+
+    uint8_t* src_buf = fb->buf;
+    size_t src_len = fb->len;
+    if (fb->format == PIXFORMAT_RGB565 && encode_buf_ != nullptr) {
+        src_buf = encode_buf_;
+        src_len = encode_buf_size_;
+    }
+
+    jpeg_data.clear();
+    bool ok = image_to_jpeg_cb(
+        src_buf, src_len, fb->width, fb->height, enc_fmt, quality,
+        [](void* arg, size_t index, const void* data, size_t len) -> size_t {
+            auto out = static_cast<std::string*>(arg);
+            if (data && len > 0) {
+                out->append(static_cast<const char*>(data), len);
+            }
+            return len;
+        },
+        &jpeg_data);
+
+    ESP_LOGI(TAG, "CaptureToJpeg %dx%d -> %zu bytes", fb->width, fb->height, jpeg_data.size());
+    return ok && !jpeg_data.empty();
 }
 
 std::expected<std::string, std::string> Esp32Camera::Explain(const std::string& question) {

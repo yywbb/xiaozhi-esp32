@@ -302,7 +302,10 @@
 #endif
 
 
-// A MCP Test: Control a lamp
-#define LAMP_GPIO GPIO_NUM_14
+// One bidirectional DC motor via channel A of an L9110S_FOUR board
+// (tracks drive fwd/rev). The module pulls A1/A2 HIGH onboard (active-low
+// inputs), so no external strapping resistor is needed on GPIO3.
+#define MOTOR_FWD_GPIO GPIO_NUM_14  // -> L9110S A1
+#define MOTOR_REV_GPIO  GPIO_NUM_3  // -> L9110S A2
 
 #endif // _BOARD_CONFIG_H_

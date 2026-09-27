@@ -4,6 +4,7 @@
 #include "audio_codec.h"
 #include "board.h"
 #include "display.h"
+#include "local_control_server.h"
 #include "mcp_server.h"
 #include "mqtt_protocol.h"
 #include "settings.h"
@@ -310,6 +311,13 @@ void Application::HandleNetworkConnectedEvent() {
     // Update the status bar immediately to show the network state
     auto display = Board::GetInstance().GetDisplay();
     display->UpdateStatusBar(true);
+
+    // Start the LAN control panel for mobile browsers (once)
+    static LocalControlServer control_server;
+    static bool control_server_started = false;
+    if (!control_server_started) {
+        control_server_started = control_server.Start(8080);
+    }
 }
 
 void Application::HandleNetworkDisconnectedEvent() {
@@ -814,6 +822,61 @@ void Application::HandleToggleChatEvent() {
     }
 }
 
+void Application::SendTextMessage(const std::string& text) {
+    if (text.empty()) {
+        return;
+    }
+    Schedule([this, text]() {
+        if (!protocol_) {
+            ESP_LOGW(TAG, "Cannot send text message, protocol not initialized");
+            return;
+        }
+
+        auto state = GetDeviceState();
+        if (state == kDeviceStateNotifying) {
+            StopNotification();
+        }
+        state = GetDeviceState();
+
+        if (state != kDeviceStateIdle && state != kDeviceStateSpeaking &&
+            state != kDeviceStateListening) {
+            ESP_LOGW(TAG, "Ignore text message in state %d", static_cast<int>(state));
+            return;
+        }
+
+        if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
+            AbortSpeaking(kAbortReasonNone);
+            // Discard microphone audio left over from the previous turn
+            while (audio_service_.PopPacketFromSendQueue()) {
+            }
+        }
+
+        if (protocol_->IsAudioChannelOpened()) {
+            protocol_->SendTextQuery(text);
+            return;
+        }
+
+        // Open a new channel first; StartListeningAudio() will send the text
+        // query once the channel is up and the device enters listening state.
+        pending_text_query_ = text;
+        SetDeviceState(kDeviceStateConnecting);
+        Schedule([this]() {
+            if (GetDeviceState() != kDeviceStateConnecting) {
+                pending_text_query_.clear();
+                return;
+            }
+            auto& board = Board::GetInstance();
+            board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+            if (!protocol_->OpenAudioChannel()) {
+                pending_text_query_.clear();
+                SetDeviceState(kDeviceStateIdle);
+                return;
+            }
+            SetDeviceState(kDeviceStateListening);
+        });
+    });
+}
+
 void Application::ContinueOpenAudioChannel(ListeningMode mode) {
     // Check state again in case it was changed during scheduling
     if (GetDeviceState() != kDeviceStateConnecting) {
@@ -1035,6 +1098,10 @@ void Application::HandleStateChangedEvent() {
                     StartListeningAudio();
                 }
             } else {
+                if (!pending_text_query_.empty()) {
+                    protocol_->SendTextQuery(pending_text_query_);
+                    pending_text_query_.clear();
+                }
                 ConfigureWakeWordForListening();
             }
             break;
@@ -1070,8 +1137,13 @@ void Application::StartListeningAudio() {
         return;
     }
 
-    // Send the start listening command
-    protocol_->SendStartListening(listening_mode_);
+    // Send the start listening command, or a text query if one is pending
+    if (!pending_text_query_.empty()) {
+        protocol_->SendTextQuery(pending_text_query_);
+        pending_text_query_.clear();
+    } else {
+        protocol_->SendStartListening(listening_mode_);
+    }
     audio_service_.EnableVoiceProcessing(true);
 
     ConfigureWakeWordForListening();

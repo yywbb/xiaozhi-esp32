@@ -6,6 +6,7 @@
 #include "mcp_server.h"
 #include <esp_app_desc.h>
 #include <esp_log.h>
+#include <esp_netif.h>
 #include <esp_pthread.h>
 #include <algorithm>
 #include <cstring>
@@ -85,6 +86,43 @@ void McpServer::AddCommonTools() {
                         return true;
                     }
                     return false;
+                });
+    }
+
+    if (display) {
+        AddTool("self.screen.show_ip",
+                "Show the device's current local IP address on the screen. Use this tool when the "
+                "user asks what the device's IP address is or asks to display/show the IP address "
+                "on the screen (for example \"显示ip地址\" / \"屏幕上显示IP\"). After calling this "
+                "tool, tell the user the IP address and the web control URL verbally so they can "
+                "open it on a phone connected to the same network.",
+                PropertyList(),
+                [display](const PropertyList& properties) -> ReturnValue {
+                    std::string ip;
+                    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                    if (netif == nullptr) {
+                        netif = esp_netif_get_handle_from_ifkey("ETH_DEF");
+                    }
+                    if (netif != nullptr) {
+                        esp_netif_ip_info_t ip_info;
+                        if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK &&
+                            ip_info.ip.addr != 0) {
+                            char ip_buf[16] = {};
+                            snprintf(ip_buf, sizeof(ip_buf), IPSTR, IP2STR(&ip_info.ip));
+                            ip = ip_buf;
+                        }
+                    }
+                    if (ip.empty()) {
+                        display->ShowNotification("IP unavailable", 10000);
+                        return false;
+                    }
+                    std::string url = "http://" + ip + ":8080";
+                    display->ShowNotification("IP Address\n" + url, 30000);
+
+                    cJSON* json = cJSON_CreateObject();
+                    cJSON_AddStringToObject(json, "ip", ip.c_str());
+                    cJSON_AddStringToObject(json, "url", url.c_str());
+                    return json;
                 });
     }
 

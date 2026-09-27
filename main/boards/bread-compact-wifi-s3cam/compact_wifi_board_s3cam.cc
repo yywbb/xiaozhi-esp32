@@ -6,7 +6,7 @@
 #include "button.h"
 #include "config.h"
 #include "mcp_server.h"
-#include "lamp_controller.h"
+#include "motor_controller.h"
 #include "led/single_led.h"
 #include "esp32_camera.h"
 
@@ -164,6 +164,10 @@ private:
         });
     }
 
+    void InitializeTools() {
+        static MotorController drive_motor(MOTOR_FWD_GPIO, MOTOR_REV_GPIO);
+    }
+
 public:
     CompactWifiBoardS3Cam() :
         boot_button_(BOOT_BUTTON_GPIO) {
@@ -171,6 +175,7 @@ public:
         InitializeLcdDisplay();
         InitializeButtons();
         InitializeCamera();
+        InitializeTools();
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }

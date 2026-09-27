@@ -64,6 +64,8 @@ public:
     virtual void SendWakeWordDetected(const std::string& wake_word);
     virtual void SendStartListening(ListeningMode mode);
     virtual void SendStopListening();
+    // Send a text query instead of voice ({"type":"listen","state":"detect","text":...})
+    virtual void SendTextQuery(const std::string& text);
     virtual void SendAbortSpeaking(AbortReason reason);
     virtual void SendMcpMessage(const std::string& message);
 

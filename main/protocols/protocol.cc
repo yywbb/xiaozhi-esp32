@@ -3,6 +3,8 @@
 
 #include <esp_log.h>
 
+#include <cstdio>
+
 #define TAG "Protocol"
 
 void Protocol::AddTextFontCapabilities(cJSON* root) {
@@ -96,6 +98,35 @@ void Protocol::SendStartListening(ListeningMode mode) {
 void Protocol::SendStopListening() {
     std::string message =
         "{\"session_id\":\"" + session_id_ + "\",\"type\":\"listen\",\"state\":\"stop\"}";
+    SendText(message);
+}
+
+void Protocol::SendTextQuery(const std::string& text) {
+    std::string escaped;
+    escaped.reserve(text.size() + 8);
+    for (char c : text) {
+        switch (c) {
+            case '"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned char>(c));
+                    escaped += buf;
+                } else {
+                    escaped += c;
+                }
+        }
+    }
+    // "detect" with text injects the text straight into the server-side LLM
+    // pipeline (skipping ASR); "start" would open an ASR session that waits
+    // for microphone audio and the text field would be ignored.
+    std::string message = "{\"session_id\":\"" + session_id_ +
+                          "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + escaped +
+                          "\"}";
     SendText(message);
 }
 
