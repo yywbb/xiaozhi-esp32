@@ -253,7 +253,7 @@ esp_err_t HandleMotor(httpd_req_t* req) {
         return SendError(req, "action must be forward/backward/stop");
     }
     std::string action = action_json->valuestring;
-    int speed = 70;
+    int speed = 100;
     int duration_ms = 1500;
     cJSON* speed_json = cJSON_GetObjectItem(root, "speed");
     if (cJSON_IsNumber(speed_json)) {

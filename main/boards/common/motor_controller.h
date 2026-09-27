@@ -142,7 +142,7 @@ public:
         PropertyList properties({
             Property("action", kPropertyTypeString).SetMaxLength(16),
             Property("duration_ms", kPropertyTypeInteger, 1500, 100, 5000),
-            Property("speed", kPropertyTypeInteger, 70, 30, 100),
+            Property("speed", kPropertyTypeInteger, 100, 30, 100),
         });
         mcp_server.AddTool("self.car.drive",
             "Control a toy car's single drive motor. Action must be one of: "

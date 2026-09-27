@@ -157,7 +157,7 @@ $('#dark').onclick=()=>setTheme('dark');
 async function motorAction(btn,name,action){
  const old=btn.innerHTML;setBusy(btn,true,name+'中…');
  try{
-  await post('/api/motor',{action,speed:70,duration_ms:1500});
+  await post('/api/motor',{action,speed:100,duration_ms:1500});
   toast(action==='stop'?'已停车 ⏹':name+' 1.5 秒');
  }catch(e){toast(name+'失败：'+e.message);}
  setBusy(btn,false,old);
