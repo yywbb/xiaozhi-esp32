@@ -12,7 +12,7 @@
 //   POST /api/volume        {"volume":0-100}
 //   POST /api/brightness    {"brightness":0-100}
 //   POST /api/theme         {"theme":"light"|"dark"}
-//   POST /api/motor         {"action":"forward"|"backward"|"stop",
+//   POST /api/motor         {"action":"forward"|"backward"|"left"|"right"|"stop",
 //                            "speed":30-100,"duration_ms":100-5000}
 //   POST /api/reboot
 class LocalControlServer {

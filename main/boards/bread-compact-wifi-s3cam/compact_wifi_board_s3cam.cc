@@ -165,7 +165,9 @@ private:
     }
 
     void InitializeTools() {
-        static MotorController drive_motor(MOTOR_FWD_GPIO, MOTOR_REV_GPIO);
+        static MotorController drive_motor(MOTOR_PCA9685_SDA_GPIO,
+                                           MOTOR_PCA9685_SCL_GPIO,
+                                           MOTOR_PCA9685_ADDR);
     }
 
 public:

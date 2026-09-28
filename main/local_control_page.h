@@ -69,11 +69,15 @@ input[type=range]{width:100%;height:28px;accent-color:#7a8cff}
  </div>
 
  <div class="card">
-  <h2>🚜 小车电机（点按测试，每次转 1.5 秒自动停）</h2>
+  <h2>🚜 挖掘机双履带（每次动作 1.5 秒自动停）</h2>
   <div class="btnrow">
    <button id="mforward">⬆️ 前进</button>
    <button class="danger" id="mstop">⏹ 停车</button>
    <button id="mbackward">⬇️ 后退</button>
+  </div>
+  <div class="btnrow" style="margin-top:10px">
+   <button id="mleft">⬅️ 左转</button>
+   <button id="mright">➡️ 右转</button>
   </div>
  </div>
 
@@ -165,6 +169,8 @@ async function motorAction(btn,name,action){
 $('#mforward').onclick=function(){motorAction(this,'前进','forward');};
 $('#mbackward').onclick=function(){motorAction(this,'后退','backward');};
 $('#mstop').onclick=function(){motorAction(this,'停车','stop');};
+$('#mleft').onclick=function(){motorAction(this,'左转','left');};
+$('#mright').onclick=function(){motorAction(this,'右转','right');};
 
 $('#reboot').onclick=async()=>{
  if(!confirm('确定重启小智吗？'))return;

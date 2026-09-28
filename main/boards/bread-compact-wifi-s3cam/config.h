@@ -302,10 +302,13 @@
 #endif
 
 
-// One bidirectional DC motor via channel A of an L9110S_FOUR board
-// (tracks drive fwd/rev). The module pulls A1/A2 HIGH onboard (active-low
-// inputs), so no external strapping resistor is needed on GPIO3.
-#define MOTOR_FWD_GPIO GPIO_NUM_14  // -> L9110S A1
-#define MOTOR_REV_GPIO  GPIO_NUM_3  // -> L9110S A2
+// Tank-style dual-track drive for the toy excavator. A PCA9685 16-ch PWM
+// board (I2C, dedicated bus) drives the L9110S_FOUR inputs:
+//   ch0 -> A1, ch1 -> A2  = LEFT track    ch2 -> B1, ch3 -> B2 = RIGHT track
+// The L9110S module stays powered from the 3.7V battery; the ESP32 keeps
+// all its GPIOs (the builtin LED on GPIO48 still works).
+#define MOTOR_PCA9685_ADDR     0x40
+#define MOTOR_PCA9685_SDA_GPIO GPIO_NUM_14
+#define MOTOR_PCA9685_SCL_GPIO GPIO_NUM_3
 
 #endif // _BOARD_CONFIG_H_

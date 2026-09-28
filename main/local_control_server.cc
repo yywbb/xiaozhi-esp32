@@ -250,7 +250,7 @@ esp_err_t HandleMotor(httpd_req_t* req) {
     cJSON* action_json = cJSON_GetObjectItem(root, "action");
     if (!cJSON_IsString(action_json) || action_json->valuestring[0] == '\0') {
         cJSON_Delete(root);
-        return SendError(req, "action must be forward/backward/stop");
+        return SendError(req, "action must be forward/backward/left/right/stop");
     }
     std::string action = action_json->valuestring;
     int speed = 100;
