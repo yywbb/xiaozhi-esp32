@@ -9,7 +9,7 @@
                 "camera_vflip": false
             },
             "sdkconfig_append": [
-                "CONFIG_LCD_ST7789_240X320=y"
+                "CONFIG_LCD_ST7789_240X240=y"
             ]
         }
     ]
