@@ -14,6 +14,7 @@
 #include "audio_codec.h"
 #include "board.h"
 #include "local_control_page.h"
+#include "settings.h"
 
 // NOTE: display.h defines HAVE_LVGL when LVGL support is compiled in, so these
 // must be included unconditionally (same pattern as mcp_server.cc); wrapping
@@ -24,6 +25,20 @@
 #include "motor_controller.h"
 
 #define TAG "LocalCtrl"
+
+#ifdef CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_S3CAM_DOG
+// Extern functions from eda_dog_controller.cc (global scope)
+extern bool QueueDogAction(int action_type, int steps, int speed, int direction, int height);
+extern bool IsDogBusy();
+
+// Action type constants (mirrors eda_dog_controller.cc enum)
+enum DogActionApi {
+    DOG_WALK = 1, DOG_TURN = 2, DOG_SIT = 3, DOG_STAND = 4,
+    DOG_STRETCH = 5, DOG_SHAKE = 6,
+    DOG_LIFT_LF = 7, DOG_LIFT_LR = 8, DOG_LIFT_RF = 9, DOG_LIFT_RR = 10,
+    DOG_HOME = 11, DOG_SLEEP = 12
+};
+#endif
 
 namespace {
 
@@ -273,6 +288,32 @@ esp_err_t HandleMotor(httpd_req_t* req) {
     return SendOk(req);
 }
 
+esp_err_t HandleServo(httpd_req_t* req) {
+    auto* motor = MotorController::GetInstance();
+    if (motor == nullptr) {
+        return SendError(req, "motor not available");
+    }
+    cJSON* root = ParseBodyJson(req);
+    if (root == nullptr) {
+        return SendError(req, "invalid json");
+    }
+    int angle = 90;
+    cJSON* angle_json = cJSON_GetObjectItem(root, "angle");
+    if (cJSON_IsNumber(angle_json)) {
+        angle = std::clamp(angle_json->valueint, 0, 180);
+    }
+    int channel = 4;
+    cJSON* channel_json = cJSON_GetObjectItem(root, "channel");
+    if (cJSON_IsNumber(channel_json)) {
+        channel = std::clamp(channel_json->valueint, 0, 15);
+    }
+    cJSON_Delete(root);
+
+    motor->SetServoAngle(channel, angle);
+    ESP_LOGI(TAG, "Servo API: channel %d -> %d deg", channel, angle);
+    return SendOk(req);
+}
+
 esp_err_t HandleReboot(httpd_req_t* req) {
     auto& app = Application::GetInstance();
     app.Schedule([&app]() {
@@ -281,6 +322,92 @@ esp_err_t HandleReboot(httpd_req_t* req) {
     });
     return SendOk(req);
 }
+
+#ifdef CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_S3CAM_DOG
+esp_err_t HandleDog(httpd_req_t* req) {
+    cJSON* root = ParseBodyJson(req);
+    if (root == nullptr) return SendError(req, "invalid json");
+    cJSON* action_json = cJSON_GetObjectItem(root, "action");
+    if (!cJSON_IsString(action_json)) { cJSON_Delete(root); return SendError(req, "missing action"); }
+    std::string action = action_json->valuestring;
+    int steps = 4;
+    cJSON* s = cJSON_GetObjectItem(root, "steps");
+    if (cJSON_IsNumber(s)) steps = std::clamp(s->valueint, 1, 10);
+    cJSON_Delete(root);
+
+    int action_type = 0, speed = 1000, direction = 0, height = 45;
+    if (action == "walk_forward") { action_type = DOG_WALK; direction = 1; }
+    else if (action == "walk_backward") { action_type = DOG_WALK; direction = -1; }
+    else if (action == "turn_left") { action_type = DOG_TURN; direction = 1; speed = 2000; }
+    else if (action == "turn_right") { action_type = DOG_TURN; direction = -1; speed = 2000; }
+    else if (action == "sit") { action_type = DOG_SIT; speed = 1500; }
+    else if (action == "stand") { action_type = DOG_STAND; speed = 1500; }
+    else if (action == "stretch") { action_type = DOG_STRETCH; speed = 2000; }
+    else if (action == "shake") { action_type = DOG_SHAKE; speed = 1000; }
+    else if (action == "lift_lf") { action_type = DOG_LIFT_LF; }
+    else if (action == "lift_lr") { action_type = DOG_LIFT_LR; }
+    else if (action == "lift_rf") { action_type = DOG_LIFT_RF; }
+    else if (action == "lift_rr") { action_type = DOG_LIFT_RR; }
+    else if (action == "home") { action_type = DOG_HOME; }
+    else if (action == "sleep") { action_type = DOG_SLEEP; speed = 1500; }
+    else return SendError(req, "unknown action");
+
+    if (!QueueDogAction(action_type, steps, speed, direction, height)) {
+        return SendError(req, "dog controller not ready");
+    }
+    ESP_LOGI(TAG, "Dog API: %s", action.c_str());
+    return SendOk(req);
+}
+
+esp_err_t HandleDogTrimGet(httpd_req_t* req) {
+    Settings settings("dog_trims", false);
+    int lf = settings.GetInt("left_front_leg", 0);
+    int lr = settings.GetInt("left_rear_leg", 0);
+    int rf = settings.GetInt("right_front_leg", 0);
+    int rr = settings.GetInt("right_rear_leg", 0);
+    cJSON* json = cJSON_CreateObject();
+    cJSON_AddBoolToObject(json, "ok", true);
+    cJSON_AddNumberToObject(json, "left_front_leg", lf);
+    cJSON_AddNumberToObject(json, "left_rear_leg", lr);
+    cJSON_AddNumberToObject(json, "right_front_leg", rf);
+    cJSON_AddNumberToObject(json, "right_rear_leg", rr);
+    char* str = cJSON_PrintUnformatted(json);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, str);
+    cJSON_free(str);
+    cJSON_Delete(json);
+    return ESP_OK;
+}
+
+esp_err_t HandleDogTrimSet(httpd_req_t* req) {
+    cJSON* root = ParseBodyJson(req);
+    if (root == nullptr) return SendError(req, "invalid json");
+    cJSON* servo_json = cJSON_GetObjectItem(root, "servo");
+    cJSON* trim_json = cJSON_GetObjectItem(root, "trim");
+    if (!cJSON_IsString(servo_json) || !cJSON_IsNumber(trim_json)) {
+        cJSON_Delete(root);
+        return SendError(req, "missing servo or trim");
+    }
+    std::string servo = servo_json->valuestring;
+    int trim = std::clamp(trim_json->valueint, -50, 50);
+    cJSON_Delete(root);
+
+    Settings settings("dog_trims", true);
+    if (servo == "left_front_leg") { settings.SetInt("left_front_leg", trim); }
+    else if (servo == "left_rear_leg") { settings.SetInt("left_rear_leg", trim); }
+    else if (servo == "right_front_leg") { settings.SetInt("right_front_leg", trim); }
+    else if (servo == "right_rear_leg") { settings.SetInt("right_rear_leg", trim); }
+    else return SendError(req, "unknown servo");
+
+    // 重新应用所有微调（通过 HOME 动作让新微调值生效）
+    if (IsDogBusy() == false) {
+        QueueDogAction(DOG_HOME, 1, 1000, 0, 0);
+    }
+
+    ESP_LOGI(TAG, "Dog trim set: %s = %d", servo.c_str(), trim);
+    return SendOk(req);
+}
+#endif
 
 }  // namespace
 
@@ -293,7 +420,7 @@ bool LocalControlServer::Start(int port) {
     config.server_port = port;
     config.ctrl_port = 32770;
     config.max_open_sockets = 6;
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 18;
     config.stack_size = 8192;
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 10;
@@ -315,7 +442,13 @@ bool LocalControlServer::Start(int port) {
         {.uri = "/api/brightness", .method = HTTP_POST, .handler = HandleBrightness, .user_ctx = nullptr},
         {.uri = "/api/theme", .method = HTTP_POST, .handler = HandleTheme, .user_ctx = nullptr},
         {.uri = "/api/motor", .method = HTTP_POST, .handler = HandleMotor, .user_ctx = nullptr},
+        {.uri = "/api/servo", .method = HTTP_POST, .handler = HandleServo, .user_ctx = nullptr},
         {.uri = "/api/reboot", .method = HTTP_POST, .handler = HandleReboot, .user_ctx = nullptr},
+#ifdef CONFIG_BOARD_TYPE_BREAD_COMPACT_WIFI_S3CAM_DOG
+        {.uri = "/api/dog", .method = HTTP_POST, .handler = HandleDog, .user_ctx = nullptr},
+        {.uri = "/api/dog/trim", .method = HTTP_GET, .handler = HandleDogTrimGet, .user_ctx = nullptr},
+        {.uri = "/api/dog/trim", .method = HTTP_POST, .handler = HandleDogTrimSet, .user_ctx = nullptr},
+#endif
     };
     for (const auto& uri : uris) {
         httpd_register_uri_handler(server_, &uri);

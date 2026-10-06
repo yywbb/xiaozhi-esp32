@@ -42,7 +42,12 @@ private:
     static constexpr uint8_t kMode1Sleep = 0x10;
     static constexpr uint8_t kMode2Outdrv = 0x04;  // totem-pole outputs
     // 25MHz / (4096 * (prescale+1)): prescale 3 -> ~1526Hz (chip max)
-    static constexpr uint8_t kPrescale = 3;
+    // 50 Hz is required for servos (20ms period). Track DC motors still work
+    // through the L9110S at this frequency (constant duty at speed 100).
+    static constexpr uint8_t kPrescale = 121;  // ~50.07 Hz
+
+    // Excavator arm servo channel (tracks use ch0-ch3)
+    static constexpr int kServoChannel = 4;
     static constexpr uint16_t kFullHigh = 4096;    // LED_FULL: always HIGH
 
     i2c_master_bus_handle_t bus_ = nullptr;
@@ -85,6 +90,22 @@ private:
         SetChannel(3, kFullHigh);
     }
 
+public:
+    static MotorController* GetInstance() { return instance_; }
+
+    // angle: 0-180 degrees -> 500-2500us pulse. PCA9685 counts: 4096 per
+    // 20ms period, so duty = pulse_us * 4096 / 20000.
+    void SetServoAngle(int channel, int angle) {
+        if (!present_ || channel < 0 || channel > 15) {
+            return;
+        }
+        if (angle < 0) angle = 0;
+        if (angle > 180) angle = 180;
+        uint32_t pulse_us = 500 + (2000 * angle) / 180;
+        uint32_t duty = (pulse_us * 4096) / 20000;
+        SetChannel(channel, (uint16_t)duty);
+    }
+
     // direction: 1 forward, -1 backward, 0 brake
     void SetTrack(int ch_fwd, int ch_rev, int direction, int speed) {
         uint16_t duty = SpeedToDuty(speed);
@@ -124,18 +145,25 @@ private:
     }
 
     void InitPca9685(gpio_num_t sda, gpio_num_t scl, uint8_t addr) {
-        const i2c_master_bus_config_t bus_config = {
-            .i2c_port = 1,  // port 0 is the camera SCCB bus
-            .sda_io_num = sda,
-            .scl_io_num = scl,
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .glitch_ignore_cnt = 7,
-            .flags = {
-                .enable_internal_pullup = true,
-            },
-        };
-        if (i2c_new_master_bus(&bus_config, &bus_) != ESP_OK) {
-            ESP_LOGW(MOTOR_TAG, "I2C bus init failed");
+        // The camera SCCB driver may occupy either I2C port depending on init
+        // order, so try each port and use the first free one.
+        i2c_master_bus_config_t bus_config = {};
+        bus_config.sda_io_num = sda;
+        bus_config.scl_io_num = scl;
+        bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
+        bus_config.glitch_ignore_cnt = 7;
+        bus_config.flags.enable_internal_pullup = true;
+
+        bool bus_ok = false;
+        for (int port = 0; port < SOC_I2C_NUM && !bus_ok; port++) {
+            bus_config.i2c_port = port;
+            if (i2c_new_master_bus(&bus_config, &bus_) == ESP_OK) {
+                bus_ok = true;
+                ESP_LOGI(MOTOR_TAG, "I2C bus on port %d", port);
+            }
+        }
+        if (!bus_ok) {
+            ESP_LOGW(MOTOR_TAG, "I2C bus init failed (all ports busy)");
             return;
         }
         const i2c_device_config_t dev_config = {
@@ -166,12 +194,10 @@ private:
         WriteRegs(kRegMode2, &mode2, 1);
 
         Brake();
+        SetServoAngle(kServoChannel, 0);
         present_ = true;
-        ESP_LOGI(MOTOR_TAG, "PCA9685 ready at 0x%02x, PWM ~1526Hz", addr);
+        ESP_LOGI(MOTOR_TAG, "PCA9685 ready at 0x%02x, PWM ~50Hz", addr);
     }
-
-public:
-    static MotorController* GetInstance() { return instance_; }
 
     // Shared by the MCP tool and the LAN HTTP API.
     // On success reply contains a human-readable result. Returns false and
@@ -241,6 +267,24 @@ public:
                     return std::unexpected(reply);
                 }
                 return reply;
+            });
+        PropertyList servo_props({
+            Property("angle", kPropertyTypeInteger, 90, 0, 180),
+            Property("channel", kPropertyTypeInteger, kServoChannel, 4, 15),
+        });
+        mcp_server.AddTool("self.servo.set_angle",
+            "Set the excavator arm servo position. angle is 0-180 degrees, "
+            "90 is center. channel defaults to the arm servo.",
+            servo_props, [this](const PropertyList& props) -> ToolResult {
+                if (!present_) {
+                    return std::unexpected(
+                        "servo driver board (PCA9685) not connected");
+                }
+                int angle = props["angle"].value<int>();
+                int channel = props["channel"].value<int>();
+                SetServoAngle(channel, angle);
+                ESP_LOGI(MOTOR_TAG, "Servo ch%d -> %d deg", channel, angle);
+                return "servo set to " + std::to_string(angle) + " degrees";
             });
         if (present_) {
             ESP_LOGI(MOTOR_TAG, "Tank controller ready (PCA9685)");
