@@ -154,9 +154,9 @@ private:
     }
 
     void InitializeCamera() {
+        // 参数与 bread-compact-wifi-s3cam（坦克板）完全一致——那块板拍照已实测可用。
+        // 注意不要覆盖 ledc_channel/ledc_timer（保持默认 0），不要用 JPEG 直出模式。
         camera_config_t config = {};
-        config.ledc_channel = LEDC_CHANNEL_2;
-        config.ledc_timer = LEDC_TIMER_2;
         config.pin_d0 = CAMERA_PIN_D0;
         config.pin_d1 = CAMERA_PIN_D1;
         config.pin_d2 = CAMERA_PIN_D2;
@@ -174,15 +174,16 @@ private:
         config.pin_pwdn = CAMERA_PIN_PWDN;
         config.pin_reset = CAMERA_PIN_RESET;
         config.xclk_freq_hz = XCLK_FREQ_HZ;
-        config.pixel_format = PIXFORMAT_JPEG;
+        config.pixel_format = PIXFORMAT_RGB565;
         config.frame_size = FRAMESIZE_VGA;
         config.jpeg_quality = 12;
-        config.fb_count = 2;
+        config.fb_count = 1;
         config.fb_location = CAMERA_FB_IN_PSRAM;
-        config.grab_mode = CAMERA_GRAB_LATEST;
+        config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
 
         camera_ = new Esp32Camera(config);
-        ESP_LOGI(TAG, "Camera initialized");
+        // Esp32Camera 构造函数成功时打印 "Camera initialized: format=..."，
+        // 失败时打印 "esp_camera_init failed with error 0x..."，这里不再重复。
     }
 
 public:

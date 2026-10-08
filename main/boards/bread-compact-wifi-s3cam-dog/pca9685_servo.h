@@ -73,6 +73,44 @@ public:
     DogServoBus(const DogServoBus&) = delete;
     DogServoBus& operator=(const DogServoBus&) = delete;
 
+    // I2C 总线恢复：ESP32 复位时 PCA9685 不断电，若上一次事务半途中断，
+    // 从机会一直钳住 SDA，导致新主机永远探测不到（重试也没用）。
+    // 手动打最多 9 个 SCL 时钟把从机的位计数推完，再发一个 STOP 释放总线。
+    static void I2cBusRecover(gpio_num_t sda, gpio_num_t scl) {
+        gpio_config_t io = {};
+        io.pin_bit_mask = (1ULL << sda) | (1ULL << scl);
+        io.mode = GPIO_MODE_INPUT_OUTPUT_OD;
+        io.pull_up_en = GPIO_PULLUP_ENABLE;
+        io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        io.intr_type = GPIO_INTR_DISABLE;
+        gpio_config(&io);
+
+        gpio_set_level(sda, 1);
+        gpio_set_level(scl, 1);
+        vTaskDelay(pdMS_TO_TICKS(2));
+        int sda_idle = gpio_get_level(sda);
+        int scl_idle = gpio_get_level(scl);
+        ESP_LOGW(DOG_SERVO_TAG,
+                 "总线空闲电平 SDA=%d SCL=%d（都为1=芯片没上电/接线断；SDA=0=被从机钳位）",
+                 sda_idle, scl_idle);
+        for (int i = 0; i < 9; i++) {
+            gpio_set_level(scl, 0);
+            vTaskDelay(pdMS_TO_TICKS(1));
+            gpio_set_level(scl, 1);
+            vTaskDelay(pdMS_TO_TICKS(1));
+            if (gpio_get_level(sda) == 1) {
+                break;  // SDA 已被释放
+            }
+        }
+        // STOP：SCL 为高时 SDA 由低拉高
+        gpio_set_level(sda, 0);
+        vTaskDelay(pdMS_TO_TICKS(1));
+        gpio_set_level(scl, 1);
+        vTaskDelay(pdMS_TO_TICKS(1));
+        gpio_set_level(sda, 1);
+        vTaskDelay(pdMS_TO_TICKS(2));
+    }
+
     // 初始化 I2C 与 PCA9685。找不到芯片时不报错，只置 present_=false，
     // 这样没接硬件的板子也能正常启动、连网、跑 AI 对话。
     bool Init(gpio_num_t sda, gpio_num_t scl, uint8_t addr, uint16_t freq_hz) {
@@ -82,18 +120,26 @@ public:
             return true;
         }
 
-        const i2c_master_bus_config_t bus_config = {
-            .i2c_port = 1,  // port 0 留给摄像头的 SCCB
-            .sda_io_num = sda,
-            .scl_io_num = scl,
-            .clk_source = I2C_CLK_SRC_DEFAULT,
-            .glitch_ignore_cnt = 7,
-            .flags = {
-                .enable_internal_pullup = true,
-            },
-        };
-        if (i2c_new_master_bus(&bus_config, &bus_) != ESP_OK) {
-            ESP_LOGW(DOG_SERVO_TAG, "I2C 总线初始化失败");
+        // 摄像头 SCCB 占用 CONFIG_SCCB_HARDWARE_I2C_PORT 指定的端口（本项目为
+        // port 1），但初始化顺序谁先谁后不定，所以逐个端口尝试，用第一个空闲的。
+        i2c_master_bus_config_t bus_config = {};
+        bus_config.sda_io_num = sda;
+        bus_config.scl_io_num = scl;
+        bus_config.clk_source = I2C_CLK_SRC_DEFAULT;
+        bus_config.glitch_ignore_cnt = 7;
+        bus_config.flags.enable_internal_pullup = true;
+
+        int chosen_port = -1;
+        for (int port = 0; port < SOC_I2C_NUM; port++) {
+            bus_config.i2c_port = port;
+            if (i2c_new_master_bus(&bus_config, &bus_) == ESP_OK) {
+                chosen_port = port;
+                ESP_LOGI(DOG_SERVO_TAG, "I2C 总线使用 port %d", port);
+                break;
+            }
+        }
+        if (chosen_port < 0) {
+            ESP_LOGW(DOG_SERVO_TAG, "I2C 总线初始化失败（端口全被占用）");
             bus_ = nullptr;
             return false;
         }
@@ -113,7 +159,46 @@ public:
             return false;
         }
 
-        if (i2c_master_probe(bus_, addr, 100) != ESP_OK) {
+        auto probe_retry = [&](int rounds, int gap_ms) -> bool {
+            for (int i = 0; i < rounds; i++) {
+                if (i > 0) {
+                    vTaskDelay(pdMS_TO_TICKS(gap_ms));
+                }
+                if (i2c_master_probe(bus_, addr, 100) == ESP_OK) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        // 第一轮：普通重试，覆盖上电未稳定/接触抖动
+        bool probed = probe_retry(3, 20);
+
+        // 第二轮：拆掉主机做 GPIO 级总线恢复，再重建主机探测，
+        // 覆盖热复位后从机钳住 SDA 的情况
+        if (!probed) {
+            ESP_LOGW(DOG_SERVO_TAG, "0x%02x 首轮无应答，执行 I2C 总线恢复后重试", addr);
+            i2c_master_bus_rm_device(dev_);
+            dev_ = nullptr;
+            i2c_del_master_bus(bus_);
+            bus_ = nullptr;
+            vTaskDelay(pdMS_TO_TICKS(5));
+
+            I2cBusRecover(sda, scl);
+
+            bus_config.i2c_port = chosen_port;
+            if (i2c_new_master_bus(&bus_config, &bus_) != ESP_OK ||
+                i2c_master_bus_add_device(bus_, &dev_config, &dev_) != ESP_OK) {
+                ESP_LOGW(DOG_SERVO_TAG, "总线恢复后重建主机失败");
+                bus_ = nullptr;
+                dev_ = nullptr;
+                present_ = false;
+                return false;
+            }
+            probed = probe_retry(5, 30);
+        }
+
+        if (!probed) {
             ESP_LOGW(DOG_SERVO_TAG,
                      "在 0x%02x 没找到 PCA9685（没接舵机板？先按无舵机模式继续）",
                      addr);
